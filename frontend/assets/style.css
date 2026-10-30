@@ -1,0 +1,210 @@
+body {
+    font-family: sans-serif;
+    padding: 15px;
+    width: 280px;
+}
+
+.section {
+    margin-bottom: 15px;
+}
+
+.section-title {
+    font-size: 12px;
+    font-weight: bold;
+    margin-bottom: 8px;
+    color: #555;
+}
+
+.field-label {
+    display: block;
+    font-size: 12px;
+    color: #555;
+    margin-bottom: 4px;
+}
+
+select, button {
+    width: 100%;
+    padding: 8px;
+    font-size: 14px;
+}
+
+select {
+    margin-bottom: 10px;
+    border: 1px solid #ccc;
+    border-radius: 4px;
+}
+
+.checkbox-group {
+    margin-bottom: 10px;
+}
+
+.checkbox-group label {
+    display: flex;
+    align-items: center;
+    font-size: 13px;
+    margin-bottom: 5px;
+    cursor: pointer;
+}
+
+.checkbox-group input[type="checkbox"] {
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+.checkbox-group.is-disabled label {
+    color: #6c757d;
+    cursor: not-allowed;
+}
+
+.checkbox-group.is-disabled input[type="checkbox"] {
+    cursor: not-allowed;
+}
+
+.feature-note {
+    margin: 2px 0 0 22px;
+    font-size: 11px;
+    line-height: 1.35;
+    color: #6c757d;
+}
+
+.feature-note.warning {
+    color: #856404;
+}
+
+.mic-status {
+    margin-top: 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.mic-status-enabled {
+    background: #e9f7ef;
+    color: #1e7e34;
+}
+
+.mic-status-unavailable {
+    background: #fdecea;
+    color: #b02a37;
+}
+
+.mic-status-neutral {
+    background: #f1f3f5;
+    color: #495057;
+}
+
+.drive-status {
+    margin-top: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.drive-status-connected {
+    background: #e9f7ef;
+    color: #1e7e34;
+}
+
+.drive-status-unavailable {
+    background: #fdecea;
+    color: #b02a37;
+}
+
+.drive-status-neutral {
+    background: #f1f3f5;
+    color: #495057;
+}
+
+.backend-status {
+    margin-top: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.backend-status-connected {
+    background: #e9f7ef;
+    color: #1e7e34;
+}
+
+.backend-status-unavailable {
+    background: #fdecea;
+    color: #b02a37;
+}
+
+.backend-status-neutral {
+    background: #f1f3f5;
+    color: #495057;
+}
+
+.recovery-status {
+    margin-top: 8px;
+    margin-bottom: 8px;
+    font-size: 12px;
+    border-radius: 4px;
+    padding: 6px 8px;
+}
+
+.recovery-status-available {
+    background: #fff3cd;
+    color: #856404;
+}
+
+.recovery-status-unavailable {
+    background: #fdecea;
+    color: #b02a37;
+}
+
+.recovery-status-neutral {
+    background: #f1f3f5;
+    color: #495057;
+}
+
+button {
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+#start {
+    background: #28a745;
+    color: white;
+}
+
+#start:hover {
+    background: #218838;
+}
+
+#stop {
+    background: #dc3545;
+    color: white;
+    margin-top: 8px;
+}
+
+#stop:hover {
+    background: #c82333;
+}
+
+.secondary {
+    background: #e9ecef;
+    color: #212529;
+    margin-bottom: 8px;
+}
+
+.secondary:hover {
+    background: #dde2e6;
+}
+
+.secondary.danger {
+    margin-top: 0;
+    margin-bottom: 8px;
+    background: #f8d7da;
+    color: #842029;
+}
+
+.secondary.danger:hover {
+    background: #f1bfc4;
+}

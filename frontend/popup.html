@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Screen Recorder</title>
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body>
+    <div class="section">
+      <div class="section-title">Recording Source</div>
+      <select id="captureType">
+        <option value="tab">Current Tab</option>
+        <option value="window">Window</option>
+        <option value="screen">Entire Screen</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Audio Options</div>
+      <div class="checkbox-group" id="systemAudioGroup">
+        <label>
+          <input type="checkbox" id="includeSystemAudio" checked>
+          <span id="systemAudioLabel">Include current tab audio</span>
+        </label>
+        <div id="systemAudioStatus" class="feature-note"></div>
+      </div>
+      <div class="checkbox-group" id="microphoneGroup">
+        <label>
+          <input type="checkbox" id="includeMicrophone">
+          <span id="microphoneLabel">Include microphone</span>
+        </label>
+        <div id="microphoneStatus" class="feature-note"></div>
+      </div>
+      <div id="micStatus" class="mic-status mic-status-neutral">Microphone permission: Checking…</div>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Processing</div>
+      <div class="checkbox-group">
+        <label>
+          <input type="checkbox" id="enableSubtitles">
+          Generate downloadable subtitles
+        </label>
+      </div>
+      <div class="checkbox-group">
+        <label>
+          <input type="checkbox" id="enableTranslation">
+          Translate generated subtitles
+        </label>
+      </div>
+      <label class="field-label" for="sourceLanguage">Spoken Language</label>
+      <select id="sourceLanguage">
+        <option value="en">English</option>
+        <option value="auto">Auto-detect</option>
+        <option value="fr">French</option>
+        <option value="es">Spanish</option>
+        <option value="de">German</option>
+        <option value="pt">Portuguese</option>
+        <option value="ja">Japanese</option>
+        <option value="ko">Korean</option>
+        <option value="zh">Chinese</option>
+        <option value="ar">Arabic</option>
+        <option value="hi">Hindi</option>
+      </select>
+      <label class="field-label" for="targetLanguage">Target Language</label>
+      <select id="targetLanguage">
+        <option value="en">English</option>
+        <option value="fr">French</option>
+        <option value="es">Spanish</option>
+        <option value="de">German</option>
+        <option value="pt">Portuguese</option>
+      </select>
+
+      <label class="field-label" for="subtitleFormat">Subtitle Format</label>
+      <select id="subtitleFormat">
+        <option value="srt">SRT</option>
+        <option value="vtt">VTT</option>
+      </select>
+
+      <div class="checkbox-group">
+        <label>
+          <input type="checkbox" id="burnSubtitles" checked>
+          Burn subtitles into exported video
+        </label>
+      </div>
+
+      <div class="checkbox-group" id="liveCaptionOverlayGroup">
+        <label>
+          <input type="checkbox" id="liveCaptionOverlay">
+          Live caption overlay beta
+        </label>
+        <div id="liveOverlayStatus" class="feature-note"></div>
+      </div>
+
+      <label class="field-label" for="compressionPreset">Compression</label>
+      <select id="compressionPreset">
+        <option value="fast">Fast</option>
+        <option value="balanced" selected>Balanced</option>
+        <option value="max">Max</option>
+      </select>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Google Drive</div>
+      <div id="driveStatus" class="drive-status drive-status-neutral">Drive: Not connected</div>
+      <div class="checkbox-group">
+        <label>
+          <input type="checkbox" id="enableDriveUpload">
+          Upload recording after save
+        </label>
+      </div>
+      <button id="connectDrive" class="secondary">Connect Drive</button>
+      <button id="disconnectDrive" class="secondary danger">Disconnect Drive</button>
+    </div>
+
+    <div class="section">
+      <div class="section-title">Backend Server</div>
+      <div id="backendStatus" class="backend-status backend-status-neutral">Backend: Not configured</div>
+      <button id="openBackendSettings" class="secondary">Configure Backend</button>
+    </div>
+
+    <div class="section" id="recoverySection" hidden>
+      <div class="section-title">Unsaved Recording</div>
+      <div id="recoveryStatus" class="recovery-status recovery-status-neutral">Checking autosave…</div>
+      <button id="recoverRecording" class="secondary">Recover Recording</button>
+      <button id="discardRecovery" class="secondary danger">Discard Autosave</button>
+    </div>
+
+    <button id="enableMic">Grant Microphone Permission</button>
+    <button id="start">Start Recording</button>
+    <button id="stop">Stop Recording</button>
+
+    <script src="popup.js"></script>
+  </body>
+</html>

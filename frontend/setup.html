@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Meet Recorder - Microphone Setup</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      margin: 0;
+      background-color: #f1f3f4;
+      color: #202124;
+      text-align: center;
+    }
+    .card {
+      background: white;
+      padding: 40px;
+      border-radius: 8px;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24);
+      max-width: 500px;
+    }
+    h1 { margin-top: 0; }
+    p { line-height: 1.5; color: #5f6368; }
+    button {
+      background-color: #1a73e8;
+      color: white;
+      border: none;
+      padding: 10px 24px;
+      border-radius: 4px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-top: 20px;
+    }
+    button:hover { background-color: #1557b0; }
+    .success { color: #1e8e3e; display: none; font-weight: bold; margin-top: 20px;}
+    .error { color: #d93025; display: none; margin-top: 20px;}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Screen Recorder Setup</h1>
+    
+    <h2>Microphone Access</h2>
+    <p>Microphone access is optional. For meeting-audio-only recordings, keep the microphone checkbox turned off in the recorder popup.</p>
+    <p>If you choose to include your microphone, Chrome requires explicit permission. This is a one-time setup.</p>
+    <button id="requestBtn">Allow Microphone Access</button>
+    <p class="success" id="micSuccessMsg">Microphone permission granted!</p>
+    <p class="error" id="micErrorMsg">Access denied.</p>
+    
+    <hr style="margin: 30px 0; border: none; border-top: 1px solid #e8eaed;">
+    
+    <h2>Backend Configuration</h2>
+    <p>Enter the URL of your backend server for AI translation and media processing features.</p>
+    <label for="backendUrl" style="display: block; margin-bottom: 8px; font-weight: 500;">Backend URL:</label>
+    <input type="text" id="backendUrl" placeholder="http://localhost:8000" style="width: 100%; padding: 8px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; margin-bottom: 10px;">
+    <button id="testBackendBtn" style="background-color: #34a853; margin-right: 8px;">Test Connection</button>
+    <button id="saveBackendBtn" style="background-color: #4285f4;">Save Backend URL</button>
+    <p class="success" id="backendSuccessMsg">Backend URL saved successfully!</p>
+    <p class="error" id="backendErrorMsg">Backend error message</p>
+  </div>
+  <script src="setup.js"></script>
+</body>
+</html>
