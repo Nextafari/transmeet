@@ -49,11 +49,13 @@ The image includes `ffmpeg`, which is required by the media conversion endpoint.
 - `POST /api/v1/translation/text` text translation
 - `POST /api/v1/media/captions` transcription + translation + subtitle generation (`srt`/`vtt`)
 - `POST /api/v1/media/live-caption` short chunk transcription for live overlay
-- `GET /api/v1/media/live-caption/config` live overlay timing/config values
+- `GET /api/v1/media/live-caption/config` live overlay timing/config values, including the `streaming` capability block
+- `WS /api/v1/media/live-stream` realtime PCM streaming (Meta) with automatic `downgrade` to the chunked path
 - `POST /api/v1/media/burn-subtitles` burn subtitles into an exported video
 - `POST /api/v1/media/convert` basic video conversion scaffold
 
 ## Notes
 
-- Gemini and Google Translate routes require `GOOGLE_API_KEY` in `.env`; `whisper-local` runs transcription and translation locally.
+- Gemini and Google Translate routes require `GOOGLE_API_KEY` in `.env`; `whisper-local` runs transcription and translation locally. Meta routes (`meta` live backend, `spark` translation leg) require `META_MODEL_API_KEY`.
+- Live caption serving walks the ordered `LIVE_CAPTION_BACKENDS` chain (primary first, then fallbacks). The `meta` rung is skipped without a Meta key; quota-like failures start a per-rung cooldown. Model/engine selection is server-side only — clients send audio plus source/target languages and never choose backends.
 - `media/convert`, `media/captions`, and `media/burn-subtitles` require ffmpeg installed on the runtime host.

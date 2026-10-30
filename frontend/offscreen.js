@@ -1287,6 +1287,7 @@
       const session = liveStreamSession;
       liveStreamSession = null;
       try {
+        session.end();
         session.close();
       } catch (error) {
         console.warn("[OFFSCREEN] Live stream session close failed:", formatError(error));
@@ -1377,7 +1378,7 @@
         sourceLanguage: currentProcessingOptions.sourceLanguage || "auto",
         targetLanguage: currentProcessingOptions.targetLanguage || "en",
         translate: !!currentProcessingOptions.enableTranslation,
-        onCaption: (text, isFinal) => {
+        onCaption: (text) => {
           if (!liveStreamActive) {
             return;
           }
@@ -1385,7 +1386,6 @@
             return;
           }
           emitLiveCaption(text);
-          void isFinal;
         },
         onDowngrade: (reason) => {
           if (!liveStreamActive) {

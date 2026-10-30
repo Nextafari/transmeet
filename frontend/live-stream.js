@@ -46,7 +46,6 @@
     // Avoid unhandled rejections when callers only use callbacks.
     ready.catch(function () {});
 
-    var gotFinal = false;
     var closed = false;
 
     function settle(fn, value) {
@@ -69,7 +68,6 @@
       if (!message || typeof message.type !== "string") return;
 
       if (message.type === "partial" || message.type === "final") {
-        if (message.type === "final") gotFinal = true;
         onCaption(String(message.text || ""), message.type === "final");
       } else if (message.type === "downgrade") {
         onDowngrade(String(message.reason || "stream unavailable"));
@@ -105,37 +103,12 @@
           }
         }
       },
-      endAndClose: function (graceMs) {
-        closed = true;
+      end: function () {
         try {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: "end" }));
           }
         } catch (error) {}
-        var timeout = Math.max(0, Number(graceMs) || 0);
-        return new Promise(function (resolve) {
-          var done = false;
-          var finish = function () {
-            if (done) return;
-            done = true;
-            try {
-              ws.close();
-            } catch (error) {}
-            resolve({ gotFinal: gotFinal });
-          };
-          var check = function () {
-            if (gotFinal) {
-              finish();
-            }
-          };
-          var originalOnMessage = ws.onmessage;
-          ws.onmessage = function (event) {
-            if (originalOnMessage) originalOnMessage(event);
-            check();
-          };
-          check();
-          setTimeout(finish, timeout);
-        });
       },
       close: function () {
         closed = true;
