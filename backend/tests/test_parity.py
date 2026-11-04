@@ -53,6 +53,9 @@ class FakeEngine:
         target_mapped = self.map_language(target)
         return bool(source_mapped and target_mapped and source_mapped == target_mapped)
 
+    def is_same_language(self, source, target):
+        return self.same_language(source, target)
+
     def translate(self, text, source, target):
         self.calls.append((text, source, target))
         return f"{text} [{target}]"

@@ -22,6 +22,10 @@ router = APIRouter()
 
 logger = logging.getLogger(__name__)
 
+# After the frontend ends cleanly, keep draining Meta briefly so trailing
+# finals for already-sent audio still reach the overlay.
+TRAILING_EVENT_GRACE_SEC = 4.0
+
 
 class _ClientClosed(Exception):
     pass
@@ -64,11 +68,25 @@ async def live_stream(websocket: WebSocket) -> None:
         await meta.aclose()
         return
 
-    # Resolve translation legs once per session (first call may load NLLB).
-    local_engine = await asyncio.to_thread(
-        translator_service._get_shared_local_engine
-    )
-    spark_client = await asyncio.to_thread(translator_service._get_spark_client)
+    # API clients are lightweight (no I/O at construction). The local engine
+    # may download and load gigabytes on first use, so it warms in the
+    # background while audio pumps start immediately; until it is ready the
+    # local leg is simply unavailable and the remaining legs serve.
+    spark_client = translator_service._get_spark_client()
+    baseten_client = translator_service._get_baseten_client()
+    leg_state: dict = {"local_engine": None}
+
+    async def _warm_local_engine() -> None:
+        try:
+            leg_state["local_engine"] = await asyncio.to_thread(
+                translator_service._get_shared_local_engine
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning("Live stream local engine warmup failed: %s", exc)
+
+    warmup_task = asyncio.create_task(_warm_local_engine())
 
     async def translate_turn(text: str, source: str | None) -> str:
         translated, _leg = await translate_with_legs(
@@ -77,8 +95,10 @@ async def live_stream(websocket: WebSocket) -> None:
             target_language=params.target_language,
             primary=settings.meta_translation_engine,
             fallbacks=settings.stream_translation_fallbacks,
-            local_engine=local_engine,
+            local_engine=leg_state["local_engine"],
             spark_client=spark_client,
+            baseten_client=baseten_client,
+            timeout=settings.live_stream_op_timeout_seconds,
         )
         return translated
 
@@ -88,6 +108,7 @@ async def live_stream(websocket: WebSocket) -> None:
         target_language=params.target_language,
         translate=params.translate,
         debounce_ms=settings.live_stream_partial_debounce_ms,
+        partial_translate_ms=settings.live_stream_partial_translate_ms,
     )
 
     async def send_to_client(message: dict) -> None:
@@ -124,6 +145,14 @@ async def live_stream(websocket: WebSocket) -> None:
         done, pending = await asyncio.wait(
             {client_task, meta_task}, return_when=asyncio.FIRST_COMPLETED
         )
+        client_done = any(
+            isinstance(_completed_exc(task), _ClientDone) for task in done
+        )
+        client_closed = any(
+            isinstance(_completed_exc(task), _ClientClosed) for task in done
+        )
+        if client_done and meta_task in pending:
+            await asyncio.wait({meta_task}, timeout=TRAILING_EVENT_GRACE_SEC)
         for task in pending:
             task.cancel()
         for task in pending:
@@ -132,20 +161,18 @@ async def live_stream(websocket: WebSocket) -> None:
             except (asyncio.CancelledError, Exception):
                 pass
 
+        if client_closed:
+            return
+        if client_done:
+            try:
+                await session.flush(send_to_client)
+            except Exception:
+                pass
+            return
+
         failure: BaseException | None = None
         for task in done:
-            try:
-                exc = task.exception()
-            except asyncio.CancelledError:
-                continue
-            if isinstance(exc, _ClientClosed):
-                return
-            if isinstance(exc, _ClientDone):
-                try:
-                    await session.flush(send_to_client)
-                except Exception:
-                    pass
-                return
+            exc = _completed_exc(task)
             if exc is not None:
                 failure = exc
 
@@ -158,11 +185,24 @@ async def live_stream(websocket: WebSocket) -> None:
     except WebSocketDisconnect:
         pass
     finally:
+        # Fire-and-forget: the loader thread keeps running until the model
+        # is cached for the next session; awaiting it here would stall
+        # disconnect on a minutes-long load.
+        if not warmup_task.done():
+            warmup_task.cancel()
+        await session.aclose()
         await meta.aclose()
         try:
             await websocket.close()
         except Exception:
             pass
+
+
+def _completed_exc(task: asyncio.Task) -> BaseException | None:
+    try:
+        return task.exception()
+    except asyncio.CancelledError:
+        return None
 
 
 async def _send_downgrade(websocket: WebSocket, reason: str) -> None:

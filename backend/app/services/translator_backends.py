@@ -639,11 +639,8 @@ class WhisperLocalTranslateBackend(TranslatorBackend):
             return "", ""
 
         lang_for_source = source_language or detected_lang
-        if (
-            self.translation_engine.provider != "marian"
-            and self.translation_engine.same_language(
-                lang_for_source, target_language
-            )
+        if self.translation_engine.is_same_language(
+            lang_for_source, target_language
         ):
             logger.info(
                 "Local live caption skipped translation: source and target are both %s",
@@ -721,11 +718,8 @@ class WhisperLocalTranslateBackend(TranslatorBackend):
             return []
 
         lang_for_source = source_language or detected_lang
-        same_language = (
-            self.translation_engine.provider != "marian"
-            and self.translation_engine.same_language(
-                lang_for_source, target_language
-            )
+        same_language = self.translation_engine.is_same_language(
+            lang_for_source, target_language
         )
         unsupported_source = (
             self.translation_engine.provider != "marian"

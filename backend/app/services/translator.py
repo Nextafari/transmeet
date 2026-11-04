@@ -24,6 +24,8 @@ from typing import Any
 import httpx
 
 from app.core.config import settings
+from app.services.baseten.client import BasetenClient
+from app.services.baseten.file_backend import BasetenFileBackend
 from app.services.local_translation import LocalTranslationEngine
 from app.services.meta.file_backend import MetaFileBackend
 from app.services.meta.spark_client import MetaSparkClient
@@ -37,7 +39,7 @@ logger = logging.getLogger(__name__)
 
 # Backends that may appear in the ordered live caption chain.
 VALID_LIVE_RUNGS = frozenset(
-    {"whisper-google", "whisper-local", "gemini", "meta"}
+    {"whisper-google", "whisper-local", "gemini", "meta", "baseten"}
 )
 
 
@@ -74,6 +76,8 @@ class TranslatorService:
         self._shared_local_engine_ready = False
         self._spark_client: Any = None
         self._spark_client_ready = False
+        self._baseten_client: Any = None
+        self._baseten_client_ready = False
         self._backend_lock = threading.RLock()
 
     @staticmethod
@@ -125,6 +129,27 @@ class TranslatorService:
                         self._spark_client = None
             return self._spark_client
 
+    def _get_baseten_client(self) -> Any | None:
+        """One shared Baseten client, or None when the key is missing."""
+        with self._backend_lock:
+            if not self._baseten_client_ready:
+                self._baseten_client_ready = True
+                if not (settings.baseten_api_key or "").strip():
+                    self._baseten_client = None
+                else:
+                    try:
+                        self._baseten_client = BasetenClient(
+                            settings.baseten_api_key,
+                            chat_model=settings.baseten_chat_model,
+                            asr_model=settings.baseten_asr_model,
+                            base_url=settings.baseten_base_url,
+                            timeout=settings.baseten_timeout_seconds,
+                        )
+                    except Exception as exc:
+                        logger.warning("Baseten client unavailable: %s", exc)
+                        self._baseten_client = None
+            return self._baseten_client
+
     def _build_backend(
         self,
         backend_type: str,
@@ -160,7 +185,21 @@ class TranslatorService:
                 translation_fallbacks=settings.stream_translation_fallbacks,
                 local_engine=self._get_shared_local_engine(),
                 spark_client=self._get_spark_client(),
+                baseten_client=self._get_baseten_client(),
                 timeout=settings.live_stream_op_timeout_seconds,
+            )
+        if backend_type == "baseten":
+            return BasetenFileBackend(
+                api_key=settings.baseten_api_key,
+                asr_model=settings.baseten_asr_model,
+                chat_model=settings.baseten_chat_model,
+                base_url=settings.baseten_base_url,
+                translation_primary=settings.meta_translation_engine,
+                translation_fallbacks=settings.stream_translation_fallbacks,
+                local_engine=self._get_shared_local_engine(),
+                baseten_client=self._get_baseten_client(),
+                spark_client=self._get_spark_client(),
+                timeout=settings.baseten_timeout_seconds,
             )
         raise ValueError(f"Unknown backend: {backend_type}")
 
@@ -223,9 +262,10 @@ class TranslatorService:
     ) -> tuple[str, str]:
         """Walk the configured live chain; return (caption_text, rung_used).
 
-        Rungs in cooldown are skipped. The ``meta`` rung is skipped when no
-        Meta key is configured. Quota-like failures start a per-rung
-        cooldown; anything else just falls through to the next rung.
+        Rungs in cooldown are skipped. The ``meta`` and ``baseten`` rungs
+        are skipped when their keys are not configured. Quota-like
+        failures start a per-rung cooldown; anything else just falls
+        through to the next rung.
         """
         chain = settings.effective_live_chain()
         unknown = [rung for rung in chain if rung not in VALID_LIVE_RUNGS]
@@ -245,6 +285,11 @@ class TranslatorService:
             if rung == "meta" and not (settings.meta_model_api_key or "").strip():
                 logger.info(
                     "Live caption rung 'meta' skipped: META_MODEL_API_KEY not set"
+                )
+                continue
+            if rung == "baseten" and not (settings.baseten_api_key or "").strip():
+                logger.info(
+                    "Live caption rung 'baseten' skipped: BASETEN_API_KEY not set"
                 )
                 continue
             try:

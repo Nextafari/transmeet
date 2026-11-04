@@ -280,6 +280,8 @@ async function updateLiveCaptionOverlay(tabId, captionText) {
         overlay.style.transform = "translateX(-50%)";
         overlay.style.zIndex = "2147483647";
         overlay.style.maxWidth = "80vw";
+        overlay.style.maxHeight = "132px";
+        overlay.style.overflow = "hidden";
         overlay.style.padding = "10px 14px";
         overlay.style.borderRadius = "10px";
         overlay.style.background = "rgba(15, 23, 42, 0.82)";
@@ -482,6 +484,14 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           const errorText = message.error
             ? `Subtitles failed: ${message.error}`
             : "Subtitles failed";
+          await updateLiveCaptionOverlay(tabId, errorText);
+          scheduleOverlayClear(tabId, 7000);
+        }
+
+        if (message.stage === "burn-error") {
+          const errorText = message.error
+            ? `Subtitle burn failed: ${message.error}`
+            : "Subtitle burn failed";
           await updateLiveCaptionOverlay(tabId, errorText);
           scheduleOverlayClear(tabId, 7000);
         }

@@ -16,6 +16,62 @@ class AudioChunk:
     duration_sec: float
 
 
+def _stderr_text(exc: BaseException) -> str:
+    raw = getattr(exc, "stderr", None)
+    if isinstance(raw, (bytes, bytearray)):
+        return raw.decode("utf-8", errors="ignore")
+    return str(raw or "")
+
+
+def _stderr_tail(exc: BaseException, limit: int = 300) -> str:
+    """Last meaningful ffmpeg/ffprobe lines (the banner comes first)."""
+    lines = [
+        line.strip()
+        for line in _stderr_text(exc).splitlines()
+        if line.strip()
+    ]
+    detail = " | ".join(lines[-3:]) if lines else ""
+    return detail[:limit] or "no ffmpeg output"
+
+
+def probe_duration_seconds(probe: dict[str, Any]) -> float | None:
+    """Best-effort duration from an ffprobe dict, else None.
+
+    Chrome MediaRecorder webm files often lack ``format.duration``, while
+    individual streams may still carry ``duration`` or timestamp-derived
+    durations.
+    """
+    try:
+        raw = (probe.get("format") or {}).get("duration")
+        if raw is not None and float(raw) > 0:
+            return float(raw)
+    except (TypeError, ValueError):
+        pass
+
+    best = 0.0
+    streams = probe.get("streams") or []
+    for stream in streams:
+        if not isinstance(stream, dict):
+            continue
+        try:
+            value = float(stream.get("duration"))
+        except (TypeError, ValueError):
+            pass
+        else:
+            best = max(best, value)
+        try:
+            duration_ts = stream.get("duration_ts")
+            time_base = str(stream.get("time_base") or "")
+            numerator, denominator = time_base.split("/")
+            value = float(duration_ts) * float(numerator) / float(denominator)
+        except (TypeError, ValueError, ZeroDivisionError):
+            continue
+        else:
+            best = max(best, value)
+
+    return best if best > 0 else None
+
+
 class MediaService:
     def convert_video(
         self,
@@ -47,28 +103,63 @@ class MediaService:
         chunk_seconds: int,
         max_seconds: int,
     ) -> tuple[list[AudioChunk], Path, float]:
+        if source_path.stat().st_size == 0:
+            raise RuntimeError("Recording file is empty (0 bytes)")
+
+        # ffprobe may fail outright on header-less or slightly damaged
+        # MediaRecorder output even though ffmpeg can still decode it, so
+        # a probe failure falls through to the WAV-extraction fallback
+        # below instead of failing captions immediately.
+        probe_error: ffmpeg.Error | None = None
+        probe: dict[str, Any] = {}
         try:
             probe = ffmpeg.probe(str(source_path))
         except ffmpeg.Error as exc:
-            stderr = ""
-            if isinstance(exc.stderr, (bytes, bytearray)):
-                stderr = exc.stderr.decode("utf-8", errors="ignore")
-            else:
-                stderr = str(exc.stderr)
-            raise RuntimeError(
-                f"Unable to determine media duration: {stderr[:300].strip()}"
-            ) from exc
+            probe_error = exc
 
-        duration_raw = probe.get("format", {}).get("duration")
-        if duration_raw is None:
+        output_dir = Path(tempfile.mkdtemp(prefix="screenrec-audio-"))
+        chunk_source = source_path
+        total_duration = probe_duration_seconds(probe)
+        if total_duration is None:
+            # Chrome MediaRecorder webm often carries no duration metadata
+            # at all: extract the full audio track once (wav always probes
+            # cleanly) and chunk from that instead.
+            full_audio_path = output_dir / "full.wav"
+            (
+                ffmpeg.input(str(source_path))
+                .output(
+                    str(full_audio_path),
+                    format="wav",
+                    ac=1,
+                    ar=16000,
+                )
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+            try:
+                fallback_probe = ffmpeg.probe(str(full_audio_path))
+            except ffmpeg.Error as exc:
+                if probe_error is not None:
+                    raise RuntimeError(
+                        "Unable to read recording: "
+                        f"probe failed ({_stderr_tail(probe_error)}); "
+                        f"wav probe failed ({_stderr_tail(exc)})"
+                    ) from exc
+                raise RuntimeError(
+                    f"Unable to read extracted audio: {_stderr_tail(exc)}"
+                ) from exc
+            total_duration = probe_duration_seconds(fallback_probe)
+            chunk_source = full_audio_path
+
+        if total_duration is None or total_duration <= 0:
+            if probe_error is not None:
+                raise RuntimeError(
+                    "Unable to determine media duration: "
+                    f"{_stderr_tail(probe_error)}"
+                )
             raise RuntimeError("Unable to determine media duration")
 
-        total_duration = float(duration_raw)
-        if total_duration <= 0:
-            raise RuntimeError("Media duration is zero")
-
         effective_duration = min(total_duration, float(max_seconds))
-        output_dir = Path(tempfile.mkdtemp(prefix="screenrec-audio-"))
         chunks: list[AudioChunk] = []
 
         cursor = 0.0
@@ -81,7 +172,7 @@ class MediaService:
 
             chunk_path = output_dir / f"chunk-{index:04d}.wav"
             (
-                ffmpeg.input(str(source_path), ss=cursor, t=clip_duration)
+                ffmpeg.input(str(chunk_source), ss=cursor, t=clip_duration)
                 .output(
                     str(chunk_path),
                     format="wav",
@@ -124,13 +215,8 @@ class MediaService:
                 .run(capture_stdout=True, capture_stderr=True)
             )
         except ffmpeg.Error as exc:
-            stderr = ""
-            if isinstance(exc.stderr, (bytes, bytearray)):
-                stderr = exc.stderr.decode("utf-8", errors="ignore")
-            else:
-                stderr = str(exc.stderr)
             raise RuntimeError(
-                f"ffmpeg error: {stderr[:300].strip()}"
+                f"ffmpeg error: {_stderr_tail(exc)}"
             ) from exc
 
         return output_path, output_dir
@@ -215,18 +301,23 @@ class MediaService:
         output_path = output_dir / f"captioned.{output_ext}"
 
         escaped_path = self._escape_filter_path(subtitle_path)
-        (
-            ffmpeg.input(str(source_path))
-            .output(
-                str(output_path),
-                vf=f"subtitles='{escaped_path}'",
-                vcodec="libx264",
-                acodec="aac",
-                movflags="+faststart",
+        try:
+            (
+                ffmpeg.input(str(source_path))
+                .output(
+                    str(output_path),
+                    vf=f"subtitles='{escaped_path}'",
+                    vcodec="libx264",
+                    acodec="aac",
+                    movflags="+faststart",
+                )
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
             )
-            .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
-        )
+        except ffmpeg.Error as exc:
+            raise RuntimeError(
+                f"Subtitle burn failed: {_stderr_tail(exc)}"
+            ) from exc
 
         return output_path
 

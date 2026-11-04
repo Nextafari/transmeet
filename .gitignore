@@ -1,6 +1,7 @@
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
+*$py.class
 *.class
 
 # C extensions
@@ -48,6 +49,8 @@ nosetests.xml
 coverage.xml
 *.cover
 *.py,cover
+*.py.cover
+cover/
 .hypothesis/
 .pytest_cache/
 
@@ -127,5 +130,15 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+# Additional Python tooling and local environment files
+.envrc
+.pytype/
+.pybuilder/
+cython_debug/
+.pdm-python
+.pdm-build/
+.ruff_cache/
+.pypirc
 
 .DS_Store

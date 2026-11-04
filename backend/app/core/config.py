@@ -1,7 +1,8 @@
 import json
+from typing import Annotated
 
 from pydantic import Field, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -24,22 +25,24 @@ class Settings(BaseSettings):
     captions_backend: str = Field(default="gemini", description="Backend for post-recording captions")
 
     # Ordered live caption backend chain: first entry is the primary, the
-    # rest are fallbacks tried in order. Entries: 'meta',
+    # rest are fallbacks tried in order. Entries: 'meta', 'baseten',
     # 'whisper-google', 'whisper-local', 'gemini'. When empty, the single
     # live_caption_backend above is used. Model/engine selection is
     # server-side only; clients never choose backends.
-    live_caption_backends: list[str] = Field(
+    live_caption_backends: Annotated[list[str], NoDecode] = Field(
         default=["meta", "whisper-local"],
         description="Ordered live caption backends; first entry is primary",
     )
-    # Translation legs for Meta-powered backends: 'nllb' (local, free) or
-    # 'spark' (Meta Model API, billed). First is primary, rest are fallbacks.
+    # Translation legs for Meta-powered backends: 'spark' (Meta Model API,
+    # billed, fast, multilingual) or 'nllb' (local, free). First is primary,
+    # rest are fallbacks. Without a Meta key the spark leg fails instantly
+    # and the local leg serves.
     meta_translation_engine: str = Field(
-        default="nllb",
+        default="spark",
         description="Primary translation leg for Meta backends",
     )
-    stream_translation_fallbacks: list[str] = Field(
-        default=["spark"],
+    stream_translation_fallbacks: Annotated[list[str], NoDecode] = Field(
+        default=["nllb"],
         description="Fallback translation legs for Meta backends",
     )
 
@@ -62,14 +65,42 @@ class Settings(BaseSettings):
         description="Meta text model id for the spark translation leg",
     )
 
+    # Baseten Model APIs (https://docs.baseten.co/inference/model-apis).
+    # Chat completions are OpenAI-compatible; audio input is supported by
+    # audio-capable slugs such as meta-models/muse-spark-open.
+    baseten_api_key: str | None = Field(
+        default=None,
+        description="Baseten API key for the baseten leg/rung",
+    )
+    baseten_base_url: str = Field(
+        default="https://inference.baseten.co/v1",
+        description="Baseten Model APIs base URL",
+    )
+    baseten_chat_model: str = Field(
+        default="deepseek-ai/DeepSeek-V4.1-Flash-1017",
+        description="Baseten slug for the baseten translation leg",
+    )
+    baseten_asr_model: str = Field(
+        default="meta-models/muse-spark-open",
+        description="Baseten audio-capable slug for the baseten rung",
+    )
+    baseten_timeout_seconds: int = Field(
+        default=30,
+        description="Timeout for a single Baseten request",
+    )
+
     # Realtime live-stream transport (frontend PCM -> backend WS -> Meta).
     live_stream_enabled: bool = Field(
         default=True,
         description="Advertise and accept the live-stream WebSocket",
     )
     live_stream_partial_debounce_ms: int = Field(
-        default=600,
-        description="Debounce for translating streaming partial transcripts",
+        default=150,
+        description="Display throttle for raw streaming partials",
+    )
+    live_stream_partial_translate_ms: int = Field(
+        default=1000,
+        description="Minimum interval between translated streaming partials",
     )
     live_stream_frame_ms: int = Field(
         default=80,
@@ -112,7 +143,7 @@ class Settings(BaseSettings):
     translation_quota_cooldown_seconds: int = Field(...)
     transcription_chunk_seconds: int = Field(...)
     max_transcription_seconds: int = Field(...)
-    live_caption_chunk_seconds: int = Field(...)
+    live_caption_chunk_seconds: float = Field(...)
 
     @field_validator(
         "live_caption_backends", "stream_translation_fallbacks", mode="before"

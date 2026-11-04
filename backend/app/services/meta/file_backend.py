@@ -31,6 +31,7 @@ class MetaFileBackend(TranslatorBackend):
         translation_fallbacks: list[str] | None = None,
         local_engine: Any | None = None,
         spark_client: Any | None = None,
+        baseten_client: Any | None = None,
         timeout: float = 30.0,
     ) -> None:
         self._api_key = api_key
@@ -40,6 +41,7 @@ class MetaFileBackend(TranslatorBackend):
         self._translation_fallbacks = list(translation_fallbacks or [])
         self._local_engine = local_engine
         self._spark_client = spark_client
+        self._baseten_client = baseten_client
         self._timeout = timeout
 
     def _voice_client(self, source_language: str | None) -> MetaVoiceClient:
@@ -70,6 +72,7 @@ class MetaFileBackend(TranslatorBackend):
                 fallbacks=self._translation_fallbacks,
                 local_engine=self._local_engine,
                 spark_client=self._spark_client,
+                baseten_client=self._baseten_client,
             )
         except Exception as exc:
             logger.warning("Meta translation legs failed, keeping source text: %s", exc)

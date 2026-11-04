@@ -18,24 +18,35 @@
     compressionPreset: "balanced",
     enableDriveUpload: false
   };
-  let liveCaptionInFlight = false;
-  let liveCaptionPendingBlobs = [];
-  let liveCaptionDrainPromise = Promise.resolve();
+  let liveCaptionSeq = 0;
+  let liveCaptionNextDisplaySeq = 1;
+  let liveCaptionPending = [];
+  let liveCaptionInflight = new Map();
+  let liveCaptionCompleted = new Map();
+  let liveCaptionSession = 0;
+  let liveCaptionPlaceholderShown = false;
+  let lastLiveCaptionErrorAt = 0;
   let liveCaptionRecorder = null;
   let liveCaptionTimer = null;
   let liveCaptionChunks = [];
   let lastLiveCaptionRequestAt = 0;
   let lastLiveCaptionFingerprint = "";
+  let liveCaptionTimeoutStreak = 0;
+  let liveCaptionEverUpdated = false;
   let activeTabId = null;
   let activeAutosave = null;
   let autosaveWriteChain = Promise.resolve();
   let autosaveDbPromise = null;
-  const DEFAULT_LIVE_CAPTION_CHUNK_MS = 3000;
-  const DEFAULT_LIVE_CAPTION_MIN_INTERVAL_MS = 1000;
-  const DEFAULT_LIVE_CAPTION_MIN_BLOB_BYTES = 2500;
-  const LIVE_CAPTION_MAX_QUEUE = 3;
+  const DEFAULT_LIVE_CAPTION_CHUNK_MS = 1000;
+  const DEFAULT_LIVE_CAPTION_MIN_INTERVAL_MS = 0;
+  const DEFAULT_LIVE_CAPTION_MIN_BLOB_BYTES = 1200;
+  const LIVE_CAPTION_MAX_QUEUE = 4;
+  const LIVE_CAPTION_MAX_INFLIGHT = 2;
+  const LIVE_CAPTION_SKIP_AHEAD_MS = 2500;
+  const LIVE_CAPTION_ERROR_THROTTLE_MS = 5000;
   const RECORDING_CHUNK_MS = 5000;
-  const LIVE_CAPTION_TIMEOUT_MS = 30000;
+  const LIVE_CAPTION_TIMEOUT_MS = 15000;
+  const LIVE_CAPTION_SLOW_AFTER_TIMEOUTS = 3;
   const AUTOSAVE_DB_NAME = "screenrec-autosave";
   const AUTOSAVE_DB_VERSION = 1;
   const AUTOSAVE_RECORDINGS_STORE = "recordings";
@@ -499,8 +510,6 @@
     sourceVideoStream = null;
     sourceMicStream = null;
     mixAudioContext = null;
-    liveCaptionInFlight = false;
-    liveCaptionPendingBlobs = [];
   }
 
   function getRecorderConfig(compressionPreset) {
@@ -652,15 +661,27 @@
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     const requestUrl = buildBackendUrl(backendUrl, path);
+    const { externalSignal, ...fetchOptions } = options;
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal) {
+      if (externalSignal.aborted) {
+        controller.abort();
+      } else {
+        externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+      }
+    }
 
     try {
       return await fetch(requestUrl, {
-        ...options,
+        ...fetchOptions,
         headers: backendRequestHeaders(requestUrl, options.headers),
         signal: controller.signal,
       });
     } finally {
       clearTimeout(timer);
+      if (externalSignal) {
+        externalSignal.removeEventListener("abort", onExternalAbort);
+      }
     }
   }
 
@@ -756,7 +777,7 @@
       liveCaptionChunkMs = numericConfigValue(
         config?.chunk_ms,
         DEFAULT_LIVE_CAPTION_CHUNK_MS,
-        1000
+        500
       );
       liveCaptionMinIntervalMs = numericConfigValue(
         config?.min_interval_ms,
@@ -853,6 +874,7 @@
       return;
     }
 
+    liveCaptionEverUpdated = true;
     if (!caption) {
       chrome.runtime.sendMessage({
         type: "RECORDING_STATUS",
@@ -870,7 +892,7 @@
     });
   }
 
-  async function requestLiveCaption(chunkBlob) {
+  async function requestLiveCaption(chunkBlob, signal) {
     const formData = new FormData();
     formData.append("file", chunkBlob, `chunk-${Date.now()}.webm`);
     formData.append("source_language", currentProcessingOptions.sourceLanguage || "en");
@@ -885,6 +907,7 @@
       {
         method: "POST",
         body: formData,
+        externalSignal: signal,
       },
       LIVE_CAPTION_TIMEOUT_MS
     );
@@ -898,7 +921,26 @@
     return String(payload?.caption_text || "").trim();
   }
 
-  async function processLiveCaptionChunk(chunkBlob) {
+  function resetLiveCaptionPipeline() {
+    for (const entry of liveCaptionInflight.values()) {
+      try {
+        entry.controller.abort();
+      } catch (error) {}
+    }
+    liveCaptionSeq = 0;
+    liveCaptionNextDisplaySeq = 1;
+    liveCaptionPending = [];
+    liveCaptionInflight = new Map();
+    liveCaptionCompleted = new Map();
+    liveCaptionSession += 1;
+    liveCaptionPlaceholderShown = false;
+  }
+
+  function enqueueLiveCaptionChunk(chunkBlob) {
+    void gateAndQueueLiveCaptionChunk(chunkBlob);
+  }
+
+  async function gateAndQueueLiveCaptionChunk(chunkBlob) {
     if (!currentProcessingOptions.liveCaptionOverlay) {
       return;
     }
@@ -928,79 +970,192 @@
     lastLiveCaptionFingerprint = fingerprint;
     lastLiveCaptionRequestAt = now;
 
-    const requestStarted = performance.now();
-    try {
-      const caption = await requestLiveCaption(chunkBlob);
-      if (!currentProcessingOptions.liveCaptionOverlay) {
-        return;
+    if (!liveCaptionEverUpdated) {
+      liveCaptionPlaceholderShown = true;
+      emitLiveCaption("Transcribing audio…");
+    }
+
+    liveCaptionSeq += 1;
+    liveCaptionPending.push({
+      seq: liveCaptionSeq,
+      blob: chunkBlob,
+      enqueuedAt: Date.now(),
+    });
+    if (liveCaptionPending.length > LIVE_CAPTION_MAX_QUEUE) {
+      const dropped = liveCaptionPending.shift();
+      // Fill the hole so ordered display never waits on a dropped chunk.
+      if (dropped.seq >= liveCaptionNextDisplaySeq) {
+        liveCaptionCompleted.set(dropped.seq, "");
       }
+      console.info("[OFFSCREEN] Live caption queue full; dropped oldest chunk");
+    }
+    pumpLiveCaptionQueue();
+  }
 
-      const elapsedMs = Math.round(performance.now() - requestStarted);
-      console.log("[OFFSCREEN] Live caption response:", {
-        elapsedMs,
-        blobBytes: chunkBlob.size,
-        captionChars: caption.length
-      });
-
-      emitLiveCaption(caption);
-    } catch (error) {
-      if (isAbortError(error)) {
-        console.info("[OFFSCREEN] Live caption chunk timed out; recording continues");
-        return;
-      }
-
-      if (!currentProcessingOptions.liveCaptionOverlay) {
-        return;
-      }
-
-      const formatted = formatError(error);
-      console.warn("[OFFSCREEN] Live caption chunk failed:", formatted);
-      chrome.runtime.sendMessage({
-        type: "RECORDING_STATUS",
-        stage: "live-caption-error",
-        tabId: activeTabId,
-        error: formatted.slice(0, 180),
-      });
+  function pumpLiveCaptionQueue() {
+    if (!currentProcessingOptions.liveCaptionOverlay) {
+      return;
+    }
+    while (
+      liveCaptionInflight.size < LIVE_CAPTION_MAX_INFLIGHT &&
+      liveCaptionPending.length > 0
+    ) {
+      startLiveCaptionRequest(liveCaptionPending.shift());
     }
   }
 
-  function enqueueLiveCaptionChunk(chunkBlob) {
-    if (liveCaptionInFlight) {
-      liveCaptionPendingBlobs.push(chunkBlob);
-      if (liveCaptionPendingBlobs.length > LIVE_CAPTION_MAX_QUEUE) {
-        liveCaptionPendingBlobs.shift();
-        console.info("[OFFSCREEN] Live caption queue full; dropped oldest chunk");
+  function startLiveCaptionRequest(item) {
+    const session = liveCaptionSession;
+    const controller = new AbortController();
+    liveCaptionInflight.set(item.seq, { controller, startedAt: Date.now() });
+    const requestStarted = performance.now();
+    requestLiveCaption(item.blob, controller.signal).then(
+      (caption) => {
+        if (session !== liveCaptionSession) {
+          return;
+        }
+        const entry = liveCaptionInflight.get(item.seq);
+        liveCaptionInflight.delete(item.seq);
+        if ((entry && entry.skipped) || item.seq < liveCaptionNextDisplaySeq) {
+          return;
+        }
+        if (!currentProcessingOptions.liveCaptionOverlay) {
+          return;
+        }
+
+        liveCaptionTimeoutStreak = 0;
+        const elapsedMs = Math.round(performance.now() - requestStarted);
+        console.log("[OFFSCREEN] Live caption response:", {
+          elapsedMs,
+          blobBytes: item.blob.size,
+          captionChars: caption.length
+        });
+
+        liveCaptionCompleted.set(item.seq, caption);
+        drainOrderedLiveCaptions();
+        pumpLiveCaptionQueue();
+      },
+      (error) => {
+        if (session !== liveCaptionSession) {
+          return;
+        }
+        const entry = liveCaptionInflight.get(item.seq);
+        liveCaptionInflight.delete(item.seq);
+        if ((entry && entry.skipped) || item.seq < liveCaptionNextDisplaySeq) {
+          return;
+        }
+        // A failed chunk renders as silence: skip it so ordering keeps moving.
+        liveCaptionCompleted.set(item.seq, "");
+        if (isAbortError(error)) {
+          liveCaptionTimeoutStreak += 1;
+          console.info("[OFFSCREEN] Live caption chunk timed out; recording continues");
+          if (
+            currentProcessingOptions.liveCaptionOverlay &&
+            liveCaptionTimeoutStreak >= LIVE_CAPTION_SLOW_AFTER_TIMEOUTS
+          ) {
+            liveCaptionEverUpdated = true;
+            chrome.runtime.sendMessage({
+              type: "RECORDING_STATUS",
+              stage: "live-caption-error",
+              tabId: activeTabId,
+              error: "backend is slow or warming up (requests timing out)",
+            });
+          }
+        } else if (currentProcessingOptions.liveCaptionOverlay) {
+          const formatted = formatError(error);
+          console.warn("[OFFSCREEN] Live caption chunk failed:", formatted);
+          const errorAt = Date.now();
+          if (errorAt - lastLiveCaptionErrorAt >= LIVE_CAPTION_ERROR_THROTTLE_MS) {
+            lastLiveCaptionErrorAt = errorAt;
+            liveCaptionEverUpdated = true;
+            chrome.runtime.sendMessage({
+              type: "RECORDING_STATUS",
+              stage: "live-caption-error",
+              tabId: activeTabId,
+              error: formatted.slice(0, 180),
+            });
+          }
+        }
+        drainOrderedLiveCaptions();
+        pumpLiveCaptionQueue();
+      }
+    );
+  }
+
+  function abortLiveCaptionRequest(seq) {
+    const entry = liveCaptionInflight.get(seq);
+    if (!entry) {
+      return;
+    }
+    entry.skipped = true;
+    try {
+      entry.controller.abort();
+    } catch (error) {}
+  }
+
+  function clearLiveCaptionPlaceholder() {
+    if (!liveCaptionPlaceholderShown) {
+      return;
+    }
+    liveCaptionPlaceholderShown = false;
+    emitLiveCaption("");
+  }
+
+  function drainOrderedLiveCaptions() {
+    for (;;) {
+      const head = liveCaptionNextDisplaySeq;
+      if (liveCaptionCompleted.has(head)) {
+        const caption = liveCaptionCompleted.get(head);
+        liveCaptionCompleted.delete(head);
+        liveCaptionNextDisplaySeq = head + 1;
+        if (caption) {
+          liveCaptionPlaceholderShown = false;
+          emitLiveCaption(caption);
+        } else {
+          // Empty result (silence, VAD, backend hiccup): keep the last
+          // caption on screen instead of blinking the overlay.
+          clearLiveCaptionPlaceholder();
+        }
+        continue;
+      }
+      if (liveCaptionPending.some((item) => item.seq === head)) {
+        pumpLiveCaptionQueue();
+        return;
+      }
+      const inflight = liveCaptionInflight.get(head);
+      if (!inflight) {
+        // Head was dropped or never started; skip past it.
+        liveCaptionNextDisplaySeq = head + 1;
+        continue;
+      }
+      let newerWaiting = false;
+      for (const seq of liveCaptionCompleted.keys()) {
+        if (seq > head) {
+          newerWaiting = true;
+          break;
+        }
+      }
+      if (
+        newerWaiting &&
+        Date.now() - inflight.startedAt >= LIVE_CAPTION_SKIP_AHEAD_MS
+      ) {
+        console.info("[OFFSCREEN] Live caption skipping stalled chunk");
+        abortLiveCaptionRequest(head);
+        liveCaptionNextDisplaySeq = head + 1;
+        continue;
       }
       return;
     }
-
-    liveCaptionInFlight = true;
-    liveCaptionDrainPromise = (async () => {
-      try {
-        await processLiveCaptionChunk(chunkBlob);
-      } finally {
-        liveCaptionInFlight = false;
-        if (liveCaptionPendingBlobs.length > 0) {
-          const nextBlob = liveCaptionPendingBlobs.shift();
-          enqueueLiveCaptionChunk(nextBlob);
-        }
-      }
-    })();
   }
 
   async function waitForLiveCaptionIdle(timeoutMs = 1500) {
     const startedAt = Date.now();
-    while (liveCaptionInFlight || liveCaptionPendingBlobs.length > 0) {
+    while (liveCaptionPending.length > 0 || liveCaptionInflight.size > 0) {
       if (Date.now() - startedAt >= timeoutMs) {
         console.info("[OFFSCREEN] Continuing finalization with live caption request still pending");
         return;
       }
-
-      const current = liveCaptionDrainPromise;
-      await Promise.race([
-        current,
-        wait(Math.max(0, timeoutMs - (Date.now() - startedAt))),
-      ]);
+      await wait(50);
     }
   }
 
@@ -1092,9 +1247,7 @@
    */
   async function setupRecorder(mediaStream) {
     recordedChunks = [];
-    liveCaptionInFlight = false;
-    liveCaptionPendingBlobs = [];
-    liveCaptionDrainPromise = Promise.resolve();
+    resetLiveCaptionPipeline();
     const recorderConfig = getRecorderConfig(currentProcessingOptions.compressionPreset);
     mediaRecorder = new MediaRecorder(mediaStream, recorderConfig);
     const filename = `recording-${Date.now()}.webm`;
@@ -1258,7 +1411,10 @@
     liveCaptionChunks = [];
     lastLiveCaptionRequestAt = 0;
     lastLiveCaptionFingerprint = "";
-    liveCaptionPendingBlobs = [];
+    lastLiveCaptionErrorAt = 0;
+    liveCaptionTimeoutStreak = 0;
+    liveCaptionEverUpdated = false;
+    resetLiveCaptionPipeline();
   }
 
   function liveAudioOnlyStream() {
@@ -1309,6 +1465,12 @@
     }
   }
 
+  function describeLiveCaptionChunk() {
+    const seconds = liveCaptionChunkMs / 1000;
+    const label = Number.isInteger(seconds) ? String(seconds) : seconds.toFixed(1);
+    return `${label}-second chunks`;
+  }
+
   function downgradeToChunked(reason) {
     if (liveStreamDowngraded) {
       return;
@@ -1320,6 +1482,11 @@
     if (!currentProcessingOptions.liveCaptionOverlay) {
       return;
     }
+    emitLiveCaption(
+      `Realtime captions unavailable; using ${describeLiveCaptionChunk()} (${
+        String(reason || "unavailable").slice(0, 80)
+      })`
+    );
     const audioStream = liveAudioOnlyStream();
     if (audioStream) {
       startLiveCaptionRecorder(audioStream);
@@ -1523,6 +1690,8 @@
     cleanupResources();
     lastLiveCaptionRequestAt = 0;
     lastLiveCaptionFingerprint = "";
+    liveCaptionTimeoutStreak = 0;
+    liveCaptionEverUpdated = false;
     activeTabId = message.tabId ?? null;
     const liveCaptionOverlay =
       !!message.processingOptions?.liveCaptionOverlay &&

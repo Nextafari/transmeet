@@ -7,8 +7,14 @@ transformers to be installed.
 """
 
 import logging
+import re
 
 logger = logging.getLogger(__name__)
+
+# Full Flores-200 codes (e.g. yor_Latn) pass straight through so callers are
+# not limited to the short ISO map below; the tokenizer still rejects codes
+# the loaded model does not know.
+_FLORES_CODE_RE = re.compile(r"^([a-z]{3})_([a-z]{4})$")
 
 
 class LocalTranslationEngine:
@@ -68,7 +74,13 @@ class LocalTranslationEngine:
         normalized = lang.strip().lower()
         if normalized in {"auto", "detect", "auto-detect", "autodetect"}:
             return None
-        return self._nllb_lang_map.get(normalized)
+        mapped = self._nllb_lang_map.get(normalized)
+        if mapped is not None:
+            return mapped
+        match = _FLORES_CODE_RE.match(normalized)
+        if match:
+            return f"{match.group(1)}_{match.group(2).capitalize()}"
+        return None
 
     def same_language(
         self,
@@ -78,6 +90,22 @@ class LocalTranslationEngine:
         source_nllb = self.map_language(source_language)
         target_nllb = self.map_language(target_language)
         return bool(source_nllb and target_nllb and source_nllb == target_nllb)
+
+    def is_same_language(
+        self,
+        source_language: str | None,
+        target_language: str,
+    ) -> bool:
+        """Provider-aware same-language check (no model needed).
+
+        Single-pair engines (marian) compare plain codes since NLLB code
+        mapping does not apply to them.
+        """
+        if self.provider == "marian":
+            source_code = str(source_language or "").strip().lower()
+            target_code = str(target_language or "").strip().lower()
+            return bool(source_code and source_code == target_code)
+        return self.same_language(source_language, target_language)
 
     def supports_source(self, source_language: str | None) -> bool:
         if self.provider == "marian":
@@ -136,13 +164,16 @@ class LocalTranslationEngine:
                 f"Unable to resolve target language token id for NLLB: {tgt_lang}"
             )
 
+        input_len = int(encoded["input_ids"].shape[1])
         with self._torch.inference_mode():
             output = self._model.generate(
                 **encoded,
                 forced_bos_token_id=forced_bos_token_id,
-                max_new_tokens=128,
+                max_new_tokens=min(128, max(32, input_len + 16)),
                 num_beams=1,
                 do_sample=False,
+                repetition_penalty=1.2,
+                no_repeat_ngram_size=3,
             )
         return self._tokenizer.batch_decode(
             output, skip_special_tokens=True
@@ -156,12 +187,15 @@ class LocalTranslationEngine:
             max_length=512,
         )
         encoded = {k: v.to(self._device) for k, v in encoded.items()}
+        input_len = int(encoded["input_ids"].shape[1])
         with self._torch.inference_mode():
             output = self._model.generate(
                 **encoded,
-                max_new_tokens=128,
+                max_new_tokens=min(128, max(32, input_len + 16)),
                 num_beams=1,
                 do_sample=False,
+                repetition_penalty=1.2,
+                no_repeat_ngram_size=3,
             )
         return self._tokenizer.batch_decode(
             output, skip_special_tokens=True

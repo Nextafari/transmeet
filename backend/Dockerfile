@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
     libopenblas-dev \
     ca-certificates \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt ./requirements.txt
@@ -27,7 +28,9 @@ ENV HF_HUB_DISABLE_XET=1
 COPY app ./app
 COPY .env.example ./.env.example
 
-RUN useradd -m -u 1000 app && chown -R app:app /app
+RUN useradd -m -u 1000 app && \
+    mkdir -p /home/app/.cache/huggingface && \
+    chown -R app:app /app /home/app/.cache
 USER app
 
 EXPOSE 8000

@@ -26,6 +26,15 @@ def _settings(monkeypatch, enabled=True, key=None):
     return settings
 
 
+class FakeSparkTranslate:
+    """Instant Spark stand-in so captions never touch the local engine."""
+
+    async def translate_text(
+        self, text, target, source_language=None, timeout=None
+    ):
+        return f"{text}|en"
+
+
 def test_downgrade_when_key_missing(monkeypatch):
     _settings(monkeypatch, enabled=True, key=None)
     with _client().websocket_connect(
@@ -109,6 +118,83 @@ def test_streaming_happy_path_passthrough(monkeypatch):
     assert second == {"type": "final", "text": "Hola.", "turn_id": 1}
 
 
+def test_streaming_starts_before_local_engine_ready(monkeypatch):
+    """Session setup must not block on the fallback engine's model load.
+
+    The local engine may download and load gigabytes on first use; audio
+    pumps and Spark translation must flow while it is still loading.
+    """
+    import threading
+
+    from app.services.translator import translator_service
+
+    _settings(monkeypatch, enabled=True, key="meta-key")
+    monkeypatch.setattr(live_stream_module, "MetaVoiceClient", ScriptedMeta)
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "meta_translation_engine", "spark")
+    monkeypatch.setattr(settings, "stream_translation_fallbacks", [])
+
+    release = threading.Event()
+
+    def slow_engine():
+        assert release.wait(timeout=30)
+        return None
+
+    monkeypatch.setattr(
+        translator_service, "_get_shared_local_engine", slow_engine
+    )
+    monkeypatch.setattr(
+        translator_service, "_get_spark_client", lambda: FakeSparkTranslate()
+    )
+    monkeypatch.setattr(translator_service, "_get_baseten_client", lambda: None)
+
+    # Backstop: unblock the loader so a regression fails instead of hanging.
+    backstop = threading.Timer(10.0, release.set)
+    backstop.daemon = True
+    backstop.start()
+    try:
+        with _client().websocket_connect(
+            "/live-stream?source_language=es&target_language=en&translate=true"
+        ) as websocket:
+            websocket.send_bytes(b"\x00\x01" * 160)
+            # The back-to-back final supersedes the pending partial before
+            # its worker ticks, so only the translated final arrives.
+            first = websocket.receive_json()
+            engine_still_loading = not release.is_set()
+            # Release the loader thread before exit: portal shutdown joins
+            # executor threads, so holding it would stall disconnect.
+            release.set()
+    finally:
+        backstop.cancel()
+        release.set()
+
+    # The caption arrived while the local engine was still loading.
+    assert engine_still_loading
+    assert first == {"type": "final", "text": "Hola.|en", "turn_id": 1}
+
+
+def test_clean_end_flushes_and_closes(monkeypatch):
+    from starlette.websockets import WebSocketDisconnect
+
+    _settings(monkeypatch, enabled=True, key="meta-key")
+    monkeypatch.setattr(live_stream_module, "MetaVoiceClient", ScriptedMeta)
+    monkeypatch.setattr(live_stream_module, "TRAILING_EVENT_GRACE_SEC", 0.05)
+
+    with _client().websocket_connect(
+        "/live-stream?source_language=es&target_language=en&translate=false"
+    ) as websocket:
+        websocket.send_bytes(b"\x00\x01" * 160)
+        first = websocket.receive_json()
+        second = websocket.receive_json()
+        websocket.send_text('{"type": "end"}')
+        with pytest.raises(WebSocketDisconnect):
+            websocket.receive_json()
+
+    assert first == {"type": "partial", "text": "hola", "turn_id": None}
+    assert second == {"type": "final", "text": "Hola.", "turn_id": 1}
+
+
 @pytest.mark.asyncio()
 async def test_config_endpoint_advertises_streaming(monkeypatch):
     from app.api.routes.media import get_live_caption_config
@@ -122,3 +208,24 @@ async def test_config_endpoint_advertises_streaming(monkeypatch):
 
     _settings(monkeypatch, enabled=True, key=None)
     assert (await get_live_caption_config())["streaming"]["enabled"] is False
+
+
+@pytest.mark.asyncio()
+async def test_config_chunk_pacing(monkeypatch):
+    from app.api.routes.media import get_live_caption_config
+    from app.core.config import settings
+
+    _settings(monkeypatch, enabled=True, key="meta-key")
+    monkeypatch.setattr(settings, "live_caption_chunk_seconds", 1.0)
+    monkeypatch.setattr(settings, "live_caption_min_interval_seconds", 1)
+    config = await get_live_caption_config()
+    assert config["chunk_ms"] == 1000
+    assert config["min_interval_ms"] == 1000
+
+    # Sub-second chunks are allowed (floored at 500 ms) and the throttle
+    # is capped at the chunk period so it cannot skip whole chunks.
+    monkeypatch.setattr(settings, "live_caption_chunk_seconds", 0.5)
+    monkeypatch.setattr(settings, "live_caption_min_interval_seconds", 5)
+    config = await get_live_caption_config()
+    assert config["chunk_ms"] == 500
+    assert config["min_interval_ms"] == 500

@@ -8,3 +8,10 @@ services:
     ports:
       - "8000:8000"
     restart: unless-stopped
+    volumes:
+      # Persist HuggingFace model downloads (NLLB, Whisper) across rebuilds
+      # so a fresh container does not re-download gigabytes on first use.
+      - hf-hub-cache:/home/app/.cache/huggingface
+
+volumes:
+  hf-hub-cache:

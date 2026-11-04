@@ -89,13 +89,19 @@ async def get_live_caption_config() -> dict[str, Any]:
         settings.live_stream_enabled
         and (settings.meta_model_api_key or "").strip()
     )
+    chunk_ms = max(500, int(float(settings.live_caption_chunk_seconds) * 1000))
     return {
         "backend": settings.live_caption_backend,
         "backends": settings.effective_live_chain(),
-        "chunk_ms": max(1000, int(settings.live_caption_chunk_seconds) * 1000),
-        "min_interval_ms": max(
-            0,
-            int(settings.live_caption_min_interval_seconds) * 1000,
+        "chunk_ms": chunk_ms,
+        # The throttle must never exceed the chunk period, or whole chunks
+        # would be skipped whenever the recorder's cadence lines up with it.
+        "min_interval_ms": min(
+            chunk_ms,
+            max(
+                0,
+                int(settings.live_caption_min_interval_seconds) * 1000,
+            ),
         ),
         "min_audio_bytes": max(0, int(settings.live_caption_min_audio_bytes)),
         "cache_ttl_ms": max(
@@ -111,6 +117,9 @@ async def get_live_caption_config() -> dict[str, Any]:
             "frame_ms": max(20, int(settings.live_stream_frame_ms)),
             "partial_debounce_ms": max(
                 0, int(settings.live_stream_partial_debounce_ms)
+            ),
+            "partial_translate_ms": max(
+                0, int(settings.live_stream_partial_translate_ms)
             ),
         },
     }

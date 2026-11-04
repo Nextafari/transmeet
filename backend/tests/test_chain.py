@@ -113,6 +113,40 @@ async def test_unknown_rung_rejected(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio()
+async def test_baseten_rung_serves(monkeypatch, tmp_path):
+    from app.core.config import settings
+
+    baseten = FakeBackend([("ok", "hola", "hello")])
+    service = _service_with_chain(
+        monkeypatch, ["baseten", "whisper-local"], {"baseten": baseten}
+    )
+    monkeypatch.setattr(settings, "baseten_api_key", "test-key")
+    text, rung = await service.transcribe_and_translate_live_chain(
+        tmp_path / "a.wav", target_language="en"
+    )
+    assert (text, rung) == ("hello", "baseten")
+
+
+@pytest.mark.asyncio()
+async def test_baseten_rung_skipped_without_key(monkeypatch, tmp_path):
+    from app.core.config import settings
+
+    baseten = FakeBackend([("ok", "hola", "hello")])
+    local = FakeBackend([("ok", "bonjour", "hello")])
+    service = _service_with_chain(
+        monkeypatch,
+        ["baseten", "whisper-local"],
+        {"baseten": baseten, "whisper-local": local},
+    )
+    monkeypatch.setattr(settings, "baseten_api_key", None)
+    text, rung = await service.transcribe_and_translate_live_chain(
+        tmp_path / "a.wav", target_language="en"
+    )
+    assert (text, rung) == ("hello", "whisper-local")
+    assert baseten.calls == []
+
+
+@pytest.mark.asyncio()
 async def test_translate_false_uses_transcribe_only(monkeypatch, tmp_path):
     backend = FakeBackend([])
     service = _service_with_chain(monkeypatch, ["gemini"], {"gemini": backend})

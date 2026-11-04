@@ -56,6 +56,6 @@ The image includes `ffmpeg`, which is required by the media conversion endpoint.
 
 ## Notes
 
-- Gemini and Google Translate routes require `GOOGLE_API_KEY` in `.env`; `whisper-local` runs transcription and translation locally. Meta routes (`meta` live backend, `spark` translation leg) require `META_MODEL_API_KEY`.
-- Live caption serving walks the ordered `LIVE_CAPTION_BACKENDS` chain (primary first, then fallbacks). The `meta` rung is skipped without a Meta key; quota-like failures start a per-rung cooldown. Model/engine selection is server-side only — clients send audio plus source/target languages and never choose backends.
+- Gemini and Google Translate routes require `GOOGLE_API_KEY` in `.env`; `whisper-local` runs transcription and translation locally. Meta routes (`meta` live backend, `spark` translation leg) require `META_MODEL_API_KEY`. Baseten routes (`baseten` live backend, `baseten` translation leg) require `BASETEN_API_KEY`.
+- Live caption serving walks the ordered `LIVE_CAPTION_BACKENDS` chain (primary first, then fallbacks). The `meta` and `baseten` rungs are skipped without their keys; quota-like failures start a per-rung cooldown. Translation legs are `nllb`, `spark`, and `baseten`. Model/engine selection is server-side only — clients send audio plus source/target languages and never choose backends.
 - `media/convert`, `media/captions`, and `media/burn-subtitles` require ffmpeg installed on the runtime host.

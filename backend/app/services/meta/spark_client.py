@@ -55,7 +55,12 @@ def _extract_translated_text(raw_text: str) -> str:
 
 
 class MetaSparkClient:
-    """Minimal Chat Completions client for text translation."""
+    """Minimal Chat Completions client for text translation.
+
+    Holds one persistent HTTP connection (keep-alive) across calls so
+    realtime translation at ~1 request/second skips the per-request
+    connect/TLS handshake.
+    """
 
     def __init__(
         self,
@@ -63,6 +68,7 @@ class MetaSparkClient:
         model: str = "muse-spark-1.3",
         base_url: str = SPARK_BASE_URL,
         timeout: float = 30.0,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not (api_key or "").strip():
             raise MetaSparkError(
@@ -73,16 +79,31 @@ class MetaSparkClient:
         self._model = (model or "").strip() or "muse-spark-1.3"
         self._base_url = (base_url or "").rstrip("/") or SPARK_BASE_URL
         self._timeout = timeout
+        self._transport = transport
+        self._client: httpx.AsyncClient | None = None
 
     @property
     def model(self) -> str:
         return self._model
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            )
+        return self._client
+
+    async def aclose(self) -> None:
+        client, self._client = self._client, None
+        if client is not None and not client.is_closed:
+            await client.aclose()
 
     async def translate_text(
         self,
         text: str,
         target_language: str,
         source_language: str | None = None,
+        timeout: float | None = None,
     ) -> str:
         if not (text or "").strip():
             return ""
@@ -92,7 +113,9 @@ class MetaSparkClient:
         payload = {
             "model": self._model,
             "temperature": 0.1,
-            "max_tokens": 512,
+            # Generous cap: reasoning counts against max_tokens, and a
+            # tight cap truncates to empty content (finish_reason=length).
+            "max_tokens": 2048,
             "messages": [
                 {
                     "role": "system",
@@ -111,13 +134,14 @@ class MetaSparkClient:
                 },
             ],
         }
+        request_timeout = self._timeout if timeout is None else timeout
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                response = await client.post(
-                    f"{self._base_url}/chat/completions",
-                    headers={"Authorization": f"Bearer {self._api_key}"},
-                    json=payload,
-                )
+            response = await self._get_client().post(
+                f"{self._base_url}/chat/completions",
+                headers={"Authorization": f"Bearer {self._api_key}"},
+                json=payload,
+                timeout=request_timeout,
+            )
         except MetaSparkError:
             raise
         except Exception as exc:
@@ -146,11 +170,44 @@ class MetaSparkClient:
                 f"Spark translation returned invalid JSON: {exc}"
             ) from exc
         choices = data.get("choices") if isinstance(data, dict) else None
-        content: Any = None
+        message: Any = {}
         if choices:
             message = (choices[0] or {}).get("message") or {}
-            content = message.get("content")
+        raw_content = message.get("content")
+        content: Any = raw_content
+        if isinstance(content, list):
+            # Some models return content blocks; join their text parts
+            # without a separator so split words and JSON stay intact.
+            content = "".join(
+                str(part.get("text") or "")
+                for part in content
+                if isinstance(part, dict)
+            )
         if not isinstance(content, str) or not content.strip():
+            refusal = message.get("refusal")
+            if isinstance(refusal, str) and refusal.strip():
+                raise MetaSparkError(
+                    f"Spark translation refused: {refusal.strip()[:200]}"
+                )
+            try:
+                choice_count = len(choices) if choices else 0
+            except TypeError:
+                choice_count = -1
+            finish_reason = (choices[0] or {}).get("finish_reason") if choices else None
+            logger.warning(
+                "Spark translation returned unusable content: "
+                "choices=%s finish_reason=%s content_type=%s "
+                "content_preview=%r input_chars=%s",
+                choice_count,
+                finish_reason,
+                type(raw_content).__name__,
+                str(raw_content)[:200],
+                len(text),
+            )
+            if finish_reason == "length":
+                raise MetaSparkError(
+                    "Spark translation truncated (max_tokens); no answer content"
+                )
             raise MetaSparkError("Spark translation returned empty content")
         translated = _extract_translated_text(content)
         logger.info("Spark translated to %s: %s...", target_language, translated[:80])
